@@ -1,0 +1,11 @@
+# Runtime state — never commit
+missions/
+tasks/
+events/
+*.log
+*.tmp
+__pycache__/
+*.pyc
+.env
+main.py.pre-reset-backup
+main.py.reference
