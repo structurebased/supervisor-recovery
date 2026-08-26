@@ -3500,7 +3500,7 @@ def _parse_audit_verdict(raw: str) -> tuple:
 
 
 def spot_audit_mission(mission_id: str, *, workdir: Optional[str] = None,
-                       timeout: int = 240,
+                       timeout: int = 600,
                        hermes_bin: str = "hermes") -> dict:
     """Adversarial completion audit. CONFIRM lets the mission close; REJECT
     appends a HIGH open finding so mission_status() keeps it ACTIVE.
