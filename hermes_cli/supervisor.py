@@ -785,6 +785,34 @@ def evaluate_worker(state: Dict[str, Any], *, now: Optional[float] = None,
                                   "Worker process died before completion; retrying from the last phase.", 0.25)
         return WorkerDecision("WORKER_CRASH", "CANCEL",
                               "Worker crashed repeatedly; cancelling.", 0.0)
+
+    # CREATED-but-never-started detection: a worker in CREATED with no
+    # started_at / worker_pid has never been spawned. The idle/timeout paths
+    # below would return NO_PROGRESS forever (write_command_if_changed skips
+    # identical commands, so the supervisor spins). Detect it explicitly:
+    # if it's been sitting CREATED beyond the idle budget, treat as a crash
+    # (attempts remain → RETRY so the loop can respawn it; exhausted → CANCEL).
+    if status == "CREATED":
+        started_at = float(state.get("started_at") or 0)
+        wpid = int(state.get("worker_pid") or 0)
+        if not started_at and not wpid:
+            age = now - float(state.get("created_at") or now)
+            idle_budget = float(budget.get("idle_timeout_seconds",
+                                          DEFAULT_BUDGET["idle_timeout_seconds"]))
+            if age > idle_budget:
+                if attempts_left(state) > 0:
+                    return WorkerDecision(
+                        "WORKER_CRASH", "RETRY",
+                        f"Worker sat CREATED for {age:.0f}s without ever starting; "
+                        f"reattempting (last phase).", 0.25)
+                return WorkerDecision(
+                    "WORKER_CRASH", "CANCEL",
+                    f"Worker sat CREATED for {age:.0f}s without ever starting; "
+                    "attempts exhausted.", 0.0)
+            # Fresh CREATED, within budget: hold
+            return WorkerDecision("NO_VERDICT_YET", "CONTINUE",
+                                  "Worker created, not yet spawned; waiting.", 0.5)
+
     if status not in WORKER_STATES:
         return WorkerDecision("WORKER_CRASH", "INVESTIGATE",
                               f"Unknown worker status {status!r}; treat as crash.", 0.05)
