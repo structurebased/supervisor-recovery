@@ -296,3 +296,27 @@ def test_dry_worker_mode_skips_llm_stage(tmp_path, monkeypatch):
     out2 = SUP.spot_audit_mission("md2", workdir=str(tmp_path),
                                   hermes_bin=str(bomb))
     assert out2["verdict"] == "REJECT"
+
+
+def test_audit_confirm_with_fake_hermes(tmp_path, monkeypatch):
+    """CONFIRM path through the LLM stage with a fake hermes binary.
+    Complements test_audit_reject_with_fake_hermes to cover both verdict
+    branches of the adversarial audit path deterministically."""
+    sup = tmp_path / "sup"; sup.mkdir()
+    monkeypatch.setenv("HERMES_SUPERVISOR_DIR", str(sup))
+    m = {"mission_id": "mc", "objective": "o", "requirements": [],
+         "phases": [{"phase_id": "p", "status": "COMPLETE",
+                     "evidence": ["see x.py"]}],
+         "unresolved_findings": []}
+    SUP.save_mission(m)
+    (tmp_path / "x.py").write_text("x = 1\n")
+    fake = tmp_path / "fake-hermes"
+    fake.write_text('#!/bin/sh\necho "analysis: evidence is solid"\n'
+                    'echo "VERDICT: CONFIRM"\n')
+    fake.chmod(0o755)
+    out = SUP.spot_audit_mission("mc", workdir=str(tmp_path),
+                                 hermes_bin=str(fake))
+    assert out["verdict"] == "CONFIRM", out
+    # Transcript should be persisted
+    audit_files = list((tmp_path / "sup" / "missions").glob("spot-audit-*.txt"))
+    assert audit_files, "audit transcript should be saved"
