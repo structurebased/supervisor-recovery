@@ -1706,6 +1706,12 @@ def build_supervise_parser(subparsers, *, cmd_supervise) -> None:
     rp.add_argument("--dry-run", action="store_true",
                     help="Show what would be reaped without deleting")
     rp.set_defaults(func=lambda a: _dispatch(a, "reap"))
+    rm = sub.add_parser("reap-missions", help="Reap stale missions with no live workers")
+    rm.add_argument("--max-age-days", type=float, default=14.0,
+                    help="Missions older than this many days are eligible (default: 14)")
+    rm.add_argument("--dry-run", action="store_true",
+                    help="Show what would be cancelled without cancelling")
+    rm.set_defaults(func=lambda a: _dispatch(a, "reap-missions"))
 
     p.set_defaults(func=lambda a: _dispatch(a, "list"))
 
@@ -2519,12 +2525,24 @@ def _dispatch(args, action: str) -> int:
             if dry:
                 result = SUP.reap_stale_workers(max_age_seconds=max_age,
                                                  dry_run=True)
-                print(f"[dry-run] would reap: {result['reaped']}")
+                print(f"[dry-run] would reap workers: {result['reaped']}")
                 print(f"[dry-run] skipped: {result['skipped']}")
             else:
                 result = SUP.reap_stale_workers(max_age_seconds=max_age)
-                print(f"reaped: {result['reaped']}")
+                print(f"reaped workers: {result['reaped']}")
                 print(f"skipped: {result['skipped']}")
+            return 0
+        if action == "reap-missions":
+            max_age = float(getattr(args, "max_age_days", 14.0) or 14.0) * 86400
+            dry = getattr(args, "dry_run", False)
+            if dry:
+                result = SUP.reap_stale_missions(max_age_seconds=max_age, dry_run=True)
+                print(f"[dry-run] would cancel: {result['cancelled']}")
+                print(f"[dry-run] kept: {result['kept']}")
+            else:
+                result = SUP.reap_stale_missions(max_age_seconds=max_age)
+                print(f"cancelled: {result['cancelled']}")
+                print(f"kept: {result['kept']}")
             return 0
     except Exception as exc:  # noqa: BLE001
         print(f"supervise {action} error: {type(exc).__name__}: {exc}")

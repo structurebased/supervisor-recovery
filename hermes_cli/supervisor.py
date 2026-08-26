@@ -1000,7 +1000,96 @@ def guard_attach(task_id: str, new_pid: int) -> Tuple[bool, str]:
         return (True, "ok")
 
 
-def cancel_worker(task_id: str) -> None:
+def cancel_mission(mission_id: str, *, reason: str = "cancelled") -> bool:
+    """Transition a mission to MISSION_CANCELLED. Returns False if already terminal."""
+    m = load_mission(mission_id)
+    if m is None:
+        return False
+    if m.get("status") not in ("MISSION_ACTIVE", "MISSION_BLOCKED"):
+        return False
+    m["status"] = "MISSION_CANCELLED"
+    m["updated_at"] = time.time()
+    m["terminal_rationale"] = {"status": "MISSION_CANCELLED", "reason": reason}
+    save_mission(m)
+    from hermes_cli.mission_ops import log_event
+    log_event(mission_id, "HIGH", "MISSION_CANCELLED", reason)
+    return True
+
+
+def reap_stale_missions(*, max_age_seconds: float = 86400 * 14,
+                        idle_seconds: float = 86400 * 3,
+                        dry_run: bool = False) -> Dict[str, List[str]]:
+    """Reap missions that are stuck in MISSION_ACTIVE with no live workers.
+
+    Safety contract:
+      - Only MISSION_ACTIVE missions are eligible
+      - Mission must be older than max_age_seconds
+      - Mission must have no live workers (all workers terminal or absent)
+      - Mission must have no PENDING/ACTIVE phases with live workers
+
+    Returns {"cancelled": [mission_ids], "kept": [mission_ids]}.
+    Idempotent: cancelled missions are no longer eligible.
+    """
+    now = time.time()
+    cancelled = []
+    kept = []
+
+    missions_base = missions_dir()
+    if not missions_base.is_dir():
+        return {"cancelled": [], "kept": []}
+
+    for f in sorted(missions_base.glob("*.json")):
+        try:
+            m = json.loads(f.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        mid = m.get("mission_id", f.stem)
+        if m.get("status") != "MISSION_ACTIVE":
+            continue
+
+        age = now - float(m.get("created_at") or now)
+        if age < max_age_seconds:
+            kept.append(mid)
+            continue
+
+        # Check for live workers
+        has_live = False
+        for p in m.get("phases", []):
+            wt = p.get("worker_task", "")
+            if wt:
+                wpath = _tasks_dir() / wt / "worker.json"
+                if wpath.exists():
+                    try:
+                        w = json.loads(wpath.read_text(encoding="utf-8"))
+                    except Exception:
+                        continue
+                    if w.get("status") not in ("COMPLETE", "FAILED", "CANCELLED"):
+                        has_live = True
+                        break
+        for d in m.get("discoveries", []):
+            wt = d.get("worker_task", "")
+            if wt:
+                wpath = _tasks_dir() / wt / "worker.json"
+                if wpath.exists():
+                    try:
+                        w = json.loads(wpath.read_text(encoding="utf-8"))
+                    except Exception:
+                        continue
+                    if w.get("status") not in ("COMPLETE", "FAILED", "CANCELLED"):
+                        has_live = True
+                        break
+
+        if has_live:
+            kept.append(mid)
+            continue
+
+        # Stale mission — cancel it
+        if dry_run:
+            cancelled.append(mid)
+        elif cancel_mission(mid, reason=f"stale: no live workers for {age:.0f}s"):
+            cancelled.append(mid)
+
+    return {"cancelled": cancelled, "kept": kept}
     write_command(task_id, WorkerDecision("CANCELLED", "CANCEL",
                                           "Supervisor cancelled the task.", 0.0))
     state = load_worker(task_id) or {}
@@ -2633,7 +2722,8 @@ def adopt_or_transfer(campaign_id: str, task_id: str, *,
 
 MISSION_DIR_NAME = "missions"
 MISSION_STATUSES = ("MISSION_ACTIVE", "MISSION_COMPLETE",
-                    "MISSION_BLOCKED", "MISSION_FAILED", "MISSION_MISSING")
+                    "MISSION_BLOCKED", "MISSION_FAILED", "MISSION_CANCELLED",
+                    "MISSION_MISSING")
 PHASE_STATUSES = ("PENDING", "ACTIVE", "COMPLETE", "BLOCKED", "FAILED",
                   "SKIPPED")
 _MISSION_MAX_PHASES = 32       # ponytail: bounded phase list per mission
